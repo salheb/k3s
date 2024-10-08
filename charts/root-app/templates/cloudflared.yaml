@@ -72,8 +72,8 @@ metadata:
 data:
   config.yaml: |
     # Name of the tunnel you want to run
-    tunnel: create ubuntu-k8s-julionogueira
-    credentials-file: /home/julio/.cloudflared/822acfaf-0aa1-439f-9df9-07a51138e9ef.json
+    tunnel: 822acfaf-0aa1-439f-9df9-07a51138e9ef
+    credentials-file: /julio/.cloudflared/822acfaf-0aa1-439f-9df9-07a51138e9ef.json
     # Serves the metrics server under /metrics and the readiness server under /ready
     metrics: 0.0.0.0:2000
     # Autoupdates applied in a k8s pod will be lost when the pod is removed or restarted, so
