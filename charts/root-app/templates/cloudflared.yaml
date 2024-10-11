@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: cloudflared
-        image: cloudflare/cloudflared:2022.3.0
+        image: cloudflare/cloudflared:2024.10.0
         args:
         - tunnel
         # Points cloudflared to the config file, which configures what
@@ -88,9 +88,9 @@ data:
     # from the internet to cloudflared, run `cloudflared tunnel route dns <tunnel> <hostname>`.
     # E.g. `cloudflared tunnel route dns example-tunnel tunnel.example.com`.
     ingress:
-    # The first rule proxies traffic to the httpbin sample Service defined in app.yaml
+    # The first rule proxies traffic to the argo-cd dash (app.yaml)
     - hostname: api.julionogueira.net
-      service: http://web-service:80
+      service: http://0.0.0.0:8080
     # This rule sends traffic to the built-in hello-world HTTP server. This can help debug connectivity
     # issues. If hello.example.com resolves and tunnel.example.com does not, then the problem is
     # in the connection from cloudflared to your local service, not from the internet to cloudflared.
