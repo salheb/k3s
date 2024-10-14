@@ -8,7 +8,7 @@ spec:
     - web
   routes:
     - kind: Rule
-      match: Host(`argo-cd.local`)
+      match: Host(`argo-cd`)
       services:
         - kind: Service
           name: argo-cd
