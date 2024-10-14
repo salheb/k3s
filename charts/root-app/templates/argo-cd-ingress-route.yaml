@@ -3,7 +3,6 @@ apiVersion: traefik.containo.us/v1alpha1
 kind: IngressRoute
 metadata:
   name: argo-cd-ingress-route
-  namespace: argo
 spec:
   entryPoints:
     - web
