@@ -1,0 +1,15 @@
+---
+kind: IngressRoute
+metadata:
+  name: argo-cd-ingress-route
+  namespace: argo
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: Host(`argo-cd.local`)
+      services:
+        - kind: Service
+          name: argo-cd
+          port: 9000
