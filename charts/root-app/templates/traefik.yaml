@@ -1,19 +1,15 @@
 apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
+kind: HelmChart
 metadata:
   name: traefik
   namespace: kube-system
 spec:
-  valuesContent: |-
-    image:
-      name: traefik
-      tag: v2.7.1
-    ports:
-      tcp1: 
-        port: 20000
-        expose: true
-        exposedPort: 20000
-      tcp2: 
-        port: 20001
-        expose: true  
-        exposedPort: 20001
+  chart: https://%{KUBERNETES_API}%/static/charts/traefik-1.81.0.tgz
+  set:
+    rbac.enabled: "true"
+    ssl.enabled: "true"
+    metrics.prometheus.enabled: "true"
+    kubernetes.ingressEndpoint.useDefaultPublishedService: "true"
+    image: "rancher/library-traefik"
+    dashboard.enabled: "true"             # <-- add this line
+    dashboard.domain: "traefik.internal"  # <-- and this one with a resolvable DNS name
