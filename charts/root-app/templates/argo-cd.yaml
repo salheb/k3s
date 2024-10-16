@@ -11,7 +11,7 @@ spec:
     path: charts/argo-cd
     targetRevision: HEAD
   destination:
-    server: https://api.julionogueira.net/argo
+    server: https://kubernetes.default.svc
     namespace: default
   syncPolicy:
     automated:
