@@ -13,5 +13,5 @@ data:
   # accounts.alice: apiKey, login
   # disables user. User is enabled by default
   # accounts.alice.enabled: "false"
-  accounts.familia: apiKey, login
+  accounts.familia: login
   
