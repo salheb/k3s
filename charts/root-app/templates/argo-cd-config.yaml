@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: argo-cd-cm
-  namespace: default
+  namespace: argo-cd
   labels:
     app.kubernetes.io/name: argo-cd-cm
     app.kubernetes.io/part-of: argo-cd
