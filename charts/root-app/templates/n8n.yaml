@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: n8n-dev
+  namespace: argocd
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 8gears.container-registry.com/library/n8n
+    chart: n8n
+    targetRevision: 0.25.0
+    helm:
+      values: |
+        config:
+          database:
+            type: postgresdb
+            postgresdb:
+              host: 10.43.100.198
+          generic:
+            timezone: America/Sao_Paulo
+        secret:
+          database:
+            postgresdb:
+              user: n8n
+              password: '2LW9amUv'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
