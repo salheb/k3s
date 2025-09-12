@@ -21,11 +21,7 @@ main:
   extraSecretNamesForEnvFrom:
     - n8n-secrets
   extraEnvVars:
-    - name: WEBHOOK_URL
-      value: "https://n8n.julionogueira.net/"
-    - name: N8N_EDITOR_BASE_URL
-      value: "https://n8n.julionogueira.net/"
-    - name: VUE_APP_URL_BASE_API
-      value: "https://n8n.julionogueira.net/"
-    - name: GENERIC_TIMEZONE
-      value: "America/Sao_Paulo"
+    WEBHOOK_URL: "https://n8n.julionogueira.net/"
+    N8N_EDITOR_BASE_URL: "https://n8n.julionogueira.net/"
+    VUE_APP_URL_BASE_API: "https://n8n.julionogueira.net/"
+    GENERIC_TIMEZONE: "America/Sao_Paulo"
