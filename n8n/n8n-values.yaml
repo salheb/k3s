@@ -6,9 +6,9 @@ db:
 externalPostgresql:
   host: "10.43.100.198"
   username: "n8n"
+  port: 5432
   database: "n8n"
   existingSecret: "n8n-secrets"
-  existingSecretPasswordKey: "postgres-password"
 
 # Main node configuration
 main:
@@ -18,24 +18,14 @@ main:
     accessMode: ReadWriteOnce
     size: 10Gi
     mountPath: "/home/node/.n8n"
-
-# Environment variables (usando a estrutura correta do chart)
-envFrom:
-  - secretRef:
-      name: n8n-secrets
-
-# Additional environment variables
-env:
-  - name: N8N_ENCRYPTION_KEY
-    valueFrom:
-      secretKeyRef:
-        name: n8n-secrets
-        key: encryption-key
-  - name: WEBHOOK_URL
-    value: "https://n8n.julionogueira.net/"
-  - name: N8N_EDITOR_BASE_URL
-    value: "https://n8n.julionogueira.net/"
-  - name: VUE_APP_URL_BASE_API
-    value: "https://n8n.julionogueira.net/"
-  - name: GENERIC_TIMEZONE
-    value: "America/Sao_Paulo"
+  extraSecretNamesForEnvFrom:
+    - n8n-secrets
+  extraEnvVars:
+    - name: WEBHOOK_URL
+      value: "https://n8n.julionogueira.net/"
+    - name: N8N_EDITOR_BASE_URL
+      value: "https://n8n.julionogueira.net/"
+    - name: VUE_APP_URL_BASE_API
+      value: "https://n8n.julionogueira.net/"
+    - name: GENERIC_TIMEZONE
+      value: "America/Sao_Paulo"

@@ -1,1 +1,4 @@
 charts/**/charts
+n8n-config
+n8n-secret.yaml
+charts/root-app/templates/codimd.yaml
