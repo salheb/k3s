@@ -10,7 +10,7 @@ spec:
   sources:
     - repoURL: https://community-charts.github.io/helm-charts
       chart: n8n
-      targetRevision: 0.25.2
+      targetRevision: 1.15.5
       helm:
         valueFiles:
           - $values/n8n/n8n-values.yaml
