@@ -7,13 +7,16 @@ metadata:
   - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  source:
-    repoURL: 8gears.container-registry.com/library
-    chart: n8n
-    targetRevision: 0.25.2
-    helm:
-      valueFiles:
+  sources:
+    - repoURL: https://github.com/n8n-io/n8n-helm.git
+      chart: n8n
+      targetRevision: 0.25.2
+      helm:
+        valueFiles:
           - $values/n8n/n8n-values.yaml
+    - repoURL: https://github.com/salheb/k3s.git
+      targetRevision: HEAD
+      ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
