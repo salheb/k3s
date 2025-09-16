@@ -26,6 +26,5 @@ main:
     VUE_APP_URL_BASE_API: "https://n8n.julionogueira.net/"
     GENERIC_TIMEZONE: "America/Sao_Paulo"
 
-# Disable automatic encryption key generation
-encryptionKey:
-  create: false
+# Disable automatic encryption key generation by not setting it
+# The key will come from the n8n-secrets SealedSecret via extraSecretNamesForEnvFrom
