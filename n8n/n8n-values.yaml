@@ -25,3 +25,7 @@ main:
     N8N_EDITOR_BASE_URL: "https://n8n.julionogueira.net/"
     VUE_APP_URL_BASE_API: "https://n8n.julionogueira.net/"
     GENERIC_TIMEZONE: "America/Sao_Paulo"
+
+# Disable automatic encryption key generation
+encryptionKey:
+  create: false
