@@ -10,6 +10,9 @@ externalPostgresql:
   database: "n8n"
   existingSecret: "n8n-secrets"
 
+# Use existing encryption key secret (SealedSecret)
+existingEncryptionKeySecret: n8n-secrets
+
 # Main node configuration
 main:
   count: 1
@@ -18,13 +21,8 @@ main:
     accessMode: ReadWriteOnce
     size: 10Gi
     mountPath: "/home/node/.n8n"
-  extraSecretNamesForEnvFrom:
-    - n8n-secrets
   extraEnvVars:
     WEBHOOK_URL: "https://n8n.julionogueira.net/"
     N8N_EDITOR_BASE_URL: "https://n8n.julionogueira.net/"
     VUE_APP_URL_BASE_API: "https://n8n.julionogueira.net/"
     GENERIC_TIMEZONE: "America/Sao_Paulo"
-
-# Disable automatic encryption key generation by not setting it
-# The key will come from the n8n-secrets SealedSecret via extraSecretNamesForEnvFrom
