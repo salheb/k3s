@@ -26,3 +26,19 @@ main:
     N8N_EDITOR_BASE_URL: "https://n8n.julionogueira.net/"
     VUE_APP_URL_BASE_API: "https://n8n.julionogueira.net/"
     GENERIC_TIMEZONE: "America/Sao_Paulo"
+
+# Ingress configuration - ensure backend uses the n8n service port (5678)
+# This prevents ArgoCD/Helm from rendering an Ingress that points to the wrong port.
+ingress:
+  enabled: true
+  hostname: julionogueira.net
+  annotations:
+    kubernetes.io/ingress.class: traefik
+    cert-manager.io/cluster-issuer: letsencrypt-production
+  tls:
+    - hosts:
+        - julionogueira.net
+      secretName: n8ndev-net-tls
+  path: /
+  # Force the ingress backend to point at the n8n service port
+  servicePort: 5678
