@@ -29,13 +29,13 @@ spec:
               mountPath: /data
   volumeClaimTemplates:
     - metadata:
-      name: redis-data
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      storageClassName: {{ .Values.redis.persistence.storageClass }}
-      resources:
-        requests:
-          storage: {{ .Values.redis.persistence.size }}
+        name: redis-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.redis.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size }}
 ---
 apiVersion: v1
 kind: Service
