@@ -297,7 +297,7 @@ data:
 
             const searchResults = await redisClient.ft.search('idx:knowledge', `${filter}=>[KNN 3 @embedding $BLOB AS score]`, {
                 PARAMS: {
-                    BLOB: Float32Array.from(embedding)
+                    BLOB: Buffer.from(new Float32Array(embedding).buffer)
                 },
                 SORTBY: 'score',
                 DIALECT: 2,
