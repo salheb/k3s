@@ -23,6 +23,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
+              mkdir -p /app
               cd /app
               cp /scripts/package.json .
               cp /scripts/mcp-server.ts .
