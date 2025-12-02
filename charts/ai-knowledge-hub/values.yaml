@@ -1,0 +1,47 @@
+# Default values for ai-knowledge-hub.
+
+redis:
+  image: redis/redis-stack-server:latest
+  port: 6379
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: local-path # Adjust if needed for your k3s setup
+
+watcher:
+  image: node:18-alpine # Base image, we'll inject code
+  # For a real scenario, you'd build a custom image. 
+  # Here we use a base image and install deps at runtime for simplicity as requested.
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+mcp:
+  image: node:18-alpine
+  port: 3000
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# List of projects to monitor
+projects:
+  - name: elisabete-nogueira
+    path: /home/julio/Documentos/projetos/elisabete-nogueira-portal/documentation
+    redis_prefix: elisabete
+
+# Global configuration
+global:
+  hostProjectsPath: /home/julio/Documentos/projetos
+
+# Secrets
+# geminiApiKey is not used directly to avoid checking it into git.
+# Instead, create a secret named 'ai-knowledge-hub-secrets' with key 'gemini-api-key'.
+secretName: "ai-knowledge-hub-secrets"

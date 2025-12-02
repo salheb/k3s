@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-mcp
+  labels:
+    app: mcp-server
+    release: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+        release: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: mcp
+          image: "{{ .Values.mcp.image }}"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cd /app
+              cp /scripts/package.json .
+              cp /scripts/mcp-server.ts .
+              npm install
+              npx ts-node mcp-server.ts
+          env:
+            - name: REDIS_URL
+              value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ .Release.Name }}-scripts

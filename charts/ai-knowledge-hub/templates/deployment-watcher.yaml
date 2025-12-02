@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-watcher
+  labels:
+    app: ingestion-watcher
+    release: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion-watcher
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: ingestion-watcher
+        release: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: watcher
+          image: "{{ .Values.watcher.image }}"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              cd /app
+              cp /scripts/package.json .
+              cp /scripts/watcher.ts .
+              npm install
+              npx ts-node watcher.ts
+          env:
+            - name: REDIS_URL
+              value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
+            - name: PROJECTS_CONFIG
+              value: "{{ .Values.projects | toJson | replace "\"" "\\\"" }}"
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName | default (printf "%s-secrets" .Release.Name) }}
+                  key: gemini-api-key
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: projects-root
+              mountPath: {{ .Values.global.hostProjectsPath }}
+          resources:
+            {{- toYaml .Values.watcher.resources | nindent 12 }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ .Release.Name }}-scripts
+        - name: projects-root
+          hostPath:
+            path: {{ .Values.global.hostProjectsPath }}
+            type: Directory
