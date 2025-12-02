@@ -12,7 +12,7 @@ data:
       "version": "1.0.0",
       "type": "module",
       "dependencies": {
-        "redis": "^4.6.0",
+        "ioredis": "^5.3.2",
         "chokidar": "^3.5.3",
         "glob": "^10.3.10",
         "@modelcontextprotocol/sdk": "^0.6.0",
@@ -23,7 +23,7 @@ data:
     }
 
   watcher.ts: |
-    import { createClient, SchemaFieldTypes, VectorAlgorithms } from 'redis';
+    import Redis from 'ioredis';
     import * as chokidar from 'chokidar';
     import * as fs from 'fs';
     import * as path from 'path';
@@ -47,7 +47,7 @@ data:
     console.log('Redis URL:', REDIS_URL);
     console.log('Projects to watch:', PROJECTS_CONFIG);
 
-    const redisClient = createClient({ url: REDIS_URL });
+    const redisClient = new Redis(REDIS_URL);
 
     redisClient.on('error', (err) => console.error('Redis Client Error', err));
 
@@ -83,38 +83,24 @@ data:
     const queue = new PromiseQueue(3);
 
     async function connectRedis() {
-      await redisClient.connect();
+      // ioredis connects automatically, but we can wait for ready
+      // await redisClient.connect(); // Not needed for ioredis
       console.log('Connected to Redis');
       
       try {
-        await redisClient.ft.create('idx:knowledge', {
-          '$.content': {
-            type: SchemaFieldTypes.TEXT,
-            AS: 'content'
-          },
-          '$.project': {
-            type: SchemaFieldTypes.TAG,
-            AS: 'project'
-          },
-          '$.path': {
-            type: SchemaFieldTypes.TAG,
-            AS: 'path'
-          },
-          '$.embedding': {
-            type: SchemaFieldTypes.VECTOR,
-            AS: 'embedding',
-            ALGORITHM: VectorAlgorithms.FLAT,
-            TYPE: 'FLOAT32',
-            DIM: 768,
-            DISTANCE_METRIC: 'COSINE'
-          }
-        }, {
-          ON: 'JSON',
-          PREFIX: 'doc:'
-        });
+        // FT.CREATE idx:knowledge ON JSON PREFIX 1 doc: SCHEMA $.content AS content TEXT $.project AS project TAG $.path AS path TAG $.embedding AS embedding VECTOR FLAT 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE
+        await redisClient.call('FT.CREATE', 'idx:knowledge', 
+          'ON', 'JSON', 
+          'PREFIX', '1', 'doc:', 
+          'SCHEMA', 
+          '$.content', 'AS', 'content', 'TEXT',
+          '$.project', 'AS', 'project', 'TAG',
+          '$.path', 'AS', 'path', 'TAG',
+          '$.embedding', 'AS', 'embedding', 'VECTOR', 'FLAT', '6', 'TYPE', 'FLOAT32', 'DIM', '768', 'DISTANCE_METRIC', 'COSINE'
+        );
         console.log('Index idx:knowledge created');
       } catch (e: any) {
-        if (e.message === 'Index already exists') {
+        if (e.message.includes('Index already exists')) {
           console.log('Index idx:knowledge already exists');
         } else {
           console.error('Error creating index:', e);
@@ -155,13 +141,16 @@ data:
               return;
           }
 
-          await redisClient.json.set(key, '$', {
+          // JSON.SET key $ json_string
+          const doc = {
             content: content,
             path: relativePath,
             project: project.name,
             embedding: embedding,
             updatedAt: new Date().toISOString()
-          });
+          };
+          
+          await redisClient.call('JSON.SET', key, '$', JSON.stringify(doc));
           
           console.log(`Updated ${key} in Redis`);
 
@@ -197,28 +186,22 @@ data:
       ListToolsRequestSchema,
     } from "@modelcontextprotocol/sdk/types.js";
     import { z } from "zod";
-    import { createClient } from 'redis';
+    import Redis from 'ioredis';
     import { GoogleGenerativeAI } from "@google/generative-ai";
 
     const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // We need to pass this env var to MCP pod too
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_API_KEY) {
-        // Fallback or error? For now let's log.
-        console.error("GEMINI_API_KEY is required for vector search");
+      console.error("GEMINI_API_KEY is required");
+      process.exit(1);
     }
 
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY || '');
+    const redisClient = new Redis(REDIS_URL);
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
 
-    const redisClient = createClient({ url: REDIS_URL });
-
     redisClient.on('error', (err) => console.error('Redis Client Error', err));
-
-    async function connectRedis() {
-      await redisClient.connect();
-      console.log('Connected to Redis');
-    }
 
     const server = new Server(
       {
@@ -237,17 +220,17 @@ data:
         tools: [
           {
             name: "search_knowledge_base",
-            description: "Search for knowledge in the project documentation using vector search",
+            description: "Search the AI Knowledge Hub for relevant documentation and code snippets using vector search.",
             inputSchema: {
               type: "object",
               properties: {
                 query: {
                   type: "string",
-                  description: "The search query",
+                  description: "The search query (e.g., 'how to install', 'project architecture')",
                 },
                 project_id: {
                   type: "string",
-                  description: "The project ID to search within (optional)",
+                  description: "Optional project ID to filter results (e.g., 'elisabete-nogueira')",
                 },
               },
               required: ["query"],
@@ -257,16 +240,9 @@ data:
       };
     });
 
-    // Generate embedding using Gemini
     async function generateEmbedding(text: string): Promise<number[]> {
-      try {
         const result = await model.embedContent(text);
-        const embedding = result.embedding;
-        return embedding.values;
-      } catch (error) {
-        console.error("Error generating embedding:", error);
-        return [];
-      }
+        return result.embedding.values;
     }
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -276,57 +252,75 @@ data:
         try {
             const embedding = await generateEmbedding(query);
             
-            if (embedding.length === 0) {
-                return {
-                    content: [{ type: "text", text: "Error generating embedding for query." }]
-                };
-            }
+            // Convert to Buffer for Redis
+            const blob = Buffer.from(new Float32Array(embedding).buffer);
 
-            // Perform Vector Search
-            // KNN 3 @embedding $BLOB AS score
-            // We need to pass the blob as bytes. 
-            // In Node redis client, we can pass Float32Array directly if using .ft.search with appropriate options?
-            // Actually, node-redis supports passing the buffer.
-            
-            // Construct the query
-            // If project_id is present, filter by it.
+            // Construct filter query
             let filter = '*';
             if (project_id) {
                 filter = `@project:{${project_id}}`;
             }
 
-            const searchResults = await redisClient.ft.search('idx:knowledge', `${filter}=>[KNN 3 @embedding $BLOB AS score]`, {
-                PARAMS: {
-                    BLOB: Buffer.from(new Float32Array(embedding).buffer)
-                },
-                SORTBY: 'score',
-                DIALECT: 2,
-                RETURN: ['content', 'path', 'project', 'score']
-            });
+            // FT.SEARCH idx:knowledge filter=>[KNN 3 @embedding $vec AS score] PARAMS 2 vec blob DIALECT 2 RETURN 4 path content project score SORTBY score
+            const args = [
+                'idx:knowledge',
+                `${filter}=>[KNN 3 @embedding $vec AS score]`,
+                'PARAMS', '2', 'vec', blob,
+                'DIALECT', '2',
+                'RETURN', '4', 'content', 'path', 'project', 'score',
+                'SORTBY', 'score'
+            ];
 
-            if (searchResults.total === 0) {
+            const response = await redisClient.call('FT.SEARCH', ...args) as any[];
+            
+            // Response format: [total, key1, [field1, val1, ...], key2, ...]
+            const total = response[0];
+            const results = [];
+
+            for (let i = 1; i < response.length; i += 2) {
+                const key = response[i];
+                const fields = response[i+1]; 
+                const doc: any = {};
+                for (let j = 0; j < fields.length; j += 2) {
+                    doc[fields[j]] = fields[j+1];
+                }
+                results.push(doc);
+            }
+
+            if (results.length === 0) {
                  return {
-                    content: [{ type: "text", text: "No relevant documents found." }]
+                    content: [
+                        {
+                            type: "text",
+                            text: `No relevant documents found for "${query}".`,
+                        },
+                    ],
                 };
             }
 
-            const resultsText = searchResults.documents.map((doc: any) => {
-                return `--- Document: ${doc.value.path} (Project: ${doc.value.project}, Score: ${doc.value.score}) ---\n${doc.value.content}\n`;
-            }).join('\n');
+            const formattedResults = results.map(doc => {
+                return `[${doc.project}] ${doc.path} (Score: ${doc.score})\n---\n${doc.content}\n---`;
+            }).join('\n\n');
 
             return {
-                content: [
-                    {
-                        type: "text",
-                        text: resultsText,
-                    },
-                ],
+              content: [
+                {
+                  type: "text",
+                  text: `Found ${total} documents for "${query}":\n\n${formattedResults}`,
+                },
+              ],
             };
 
         } catch (error: any) {
             console.error("Search error:", error);
             return {
-                content: [{ type: "text", text: `Error executing search: ${error.message}` }]
+                content: [
+                    {
+                        type: "text",
+                        text: `Error performing search: ${error.message}`,
+                    },
+                ],
+                isError: true,
             };
         }
       }
@@ -334,7 +328,6 @@ data:
     });
 
     async function run() {
-      await connectRedis();
       const transport = new StdioServerTransport();
       await server.connect(transport);
       console.error("AI Knowledge Hub MCP Server running on stdio");
