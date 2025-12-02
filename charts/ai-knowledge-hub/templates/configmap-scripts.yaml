@@ -113,7 +113,8 @@ data:
           ignored: /(^|[\/\\])\../, // ignore dotfiles
           persistent: true
         }).on('add', path => processFile(path, project))
-          .on('change', path => processFile(path, project));
+          .on('change', path => processFile(path, project))
+          .on('ready', () => console.log(`Initial scan complete for ${project.name}`));
       });
     }
 
