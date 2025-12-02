@@ -23,7 +23,7 @@ data:
     }
 
   watcher.ts: |
-    import { createClient } from 'redis';
+    import { createClient, SchemaFieldTypes, VectorAlgorithms } from 'redis';
     import * as chokidar from 'chokidar';
     import * as fs from 'fs';
     import * as path from 'path';
@@ -51,21 +51,87 @@ data:
 
     redisClient.on('error', (err) => console.error('Redis Client Error', err));
 
+    // Simple Promise Queue for rate limiting
+    class PromiseQueue {
+      private queue: (() => Promise<void>)[] = [];
+      private active = 0;
+      private limit: number;
+
+      constructor(limit: number) {
+        this.limit = limit;
+      }
+
+      add(fn: () => Promise<void>) {
+        this.queue.push(fn);
+        this.next();
+      }
+
+      private next() {
+        if (this.active >= this.limit || this.queue.length === 0) return;
+        this.active++;
+        const fn = this.queue.shift();
+        if (fn) {
+          fn().finally(() => {
+            this.active--;
+            this.next();
+          });
+        }
+      }
+    }
+
+    // Limit to 3 concurrent requests to avoid Gemini rate limits during initial scan
+    const queue = new PromiseQueue(3);
+
     async function connectRedis() {
       await redisClient.connect();
       console.log('Connected to Redis');
+      
+      try {
+        await redisClient.ft.create('idx:knowledge', {
+          '$.content': {
+            type: SchemaFieldTypes.TEXT,
+            AS: 'content'
+          },
+          '$.project': {
+            type: SchemaFieldTypes.TAG,
+            AS: 'project'
+          },
+          '$.path': {
+            type: SchemaFieldTypes.TAG,
+            AS: 'path'
+          },
+          '$.embedding': {
+            type: SchemaFieldTypes.VECTOR,
+            AS: 'embedding',
+            ALGORITHM: VectorAlgorithms.FLAT,
+            TYPE: 'FLOAT32',
+            DIM: 768,
+            DISTANCE_METRIC: 'COSINE'
+          }
+        }, {
+          ON: 'JSON',
+          PREFIX: 'doc:'
+        });
+        console.log('Index idx:knowledge created');
+      } catch (e: any) {
+        if (e.message === 'Index already exists') {
+          console.log('Index idx:knowledge already exists');
+        } else {
+          console.error('Error creating index:', e);
+        }
+      }
     }
 
     // Generate embedding using Gemini
     async function generateEmbedding(text: string): Promise<number[]> {
       try {
+        // Add a small delay to further space out requests if needed
+        await new Promise(resolve => setTimeout(resolve, 500));
         const result = await model.embedContent(text);
         const embedding = result.embedding;
         return embedding.values;
       } catch (error) {
         console.error("Error generating embedding:", error);
-        // Return empty array or throw, for now returning empty to not crash watcher loop completely
-        // but ideally should handle retry logic
         return [];
       }
     }
@@ -73,34 +139,36 @@ data:
     async function processFile(filePath: string, project: any) {
       if (!filePath.endsWith('.md')) return;
 
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const relativePath = path.relative(project.path, filePath);
-        const key = `${project.redis_prefix}:doc:${relativePath}`;
+      queue.add(async () => {
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const relativePath = path.relative(project.path, filePath);
+          // Use a prefix that matches the index definition (doc:)
+          const key = `doc:${project.redis_prefix}:${relativePath}`;
 
-        console.log(`Processing file: ${filePath} -> Key: ${key}`);
+          console.log(`Processing file: ${filePath} -> Key: ${key}`);
 
-        // Store content and embedding
-        // Note: Redis Stack supports vector search if configured. 
-        // Here we just store the hash for simplicity of the example.
-        // To fully use vector search, we'd need to create an index first.
-        
-        const embedding = await generateEmbedding(content);
+          const embedding = await generateEmbedding(content);
 
-        await redisClient.hSet(key, {
-          content: content,
-          path: relativePath,
-          project: project.name,
-          // Store embedding as bytes or JSON depending on Redis setup
-          // For now, just storing metadata
-          updatedAt: new Date().toISOString()
-        });
-        
-        console.log(`Updated ${key} in Redis`);
+          if (embedding.length === 0) {
+              console.warn(`Skipping ${filePath} due to empty embedding`);
+              return;
+          }
 
-      } catch (error) {
-        console.error(`Error processing file ${filePath}:`, error);
-      }
+          await redisClient.json.set(key, '$', {
+            content: content,
+            path: relativePath,
+            project: project.name,
+            embedding: embedding,
+            updatedAt: new Date().toISOString()
+          });
+          
+          console.log(`Updated ${key} in Redis`);
+
+        } catch (error) {
+          console.error(`Error processing file ${filePath}:`, error);
+        }
+      });
     }
 
     async function startWatcher() {
@@ -111,7 +179,8 @@ data:
         
         chokidar.watch(project.path, {
           ignored: /(^|[\/\\])\../, // ignore dotfiles
-          persistent: true
+          persistent: true,
+          ignoreInitial: false // Explicitly state we want initial scan
         }).on('add', path => processFile(path, project))
           .on('change', path => processFile(path, project))
           .on('ready', () => console.log(`Initial scan complete for ${project.name}`));
@@ -129,8 +198,19 @@ data:
     } from "@modelcontextprotocol/sdk/types.js";
     import { z } from "zod";
     import { createClient } from 'redis';
+    import { GoogleGenerativeAI } from "@google/generative-ai";
 
     const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY; // We need to pass this env var to MCP pod too
+
+    if (!GEMINI_API_KEY) {
+        // Fallback or error? For now let's log.
+        console.error("GEMINI_API_KEY is required for vector search");
+    }
+
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY || '');
+    const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+
     const redisClient = createClient({ url: REDIS_URL });
 
     redisClient.on('error', (err) => console.error('Redis Client Error', err));
@@ -157,7 +237,7 @@ data:
         tools: [
           {
             name: "search_knowledge_base",
-            description: "Search for knowledge in the project documentation",
+            description: "Search for knowledge in the project documentation using vector search",
             inputSchema: {
               type: "object",
               properties: {
@@ -177,23 +257,78 @@ data:
       };
     });
 
+    // Generate embedding using Gemini
+    async function generateEmbedding(text: string): Promise<number[]> {
+      try {
+        const result = await model.embedContent(text);
+        const embedding = result.embedding;
+        return embedding.values;
+      } catch (error) {
+        console.error("Error generating embedding:", error);
+        return [];
+      }
+    }
+
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (request.params.name === "search_knowledge_base") {
         const { query, project_id } = request.params.arguments as any;
         
-        // In a real implementation, perform vector search here using Redis Stack
-        // For now, we'll scan keys (inefficient but functional for demo)
-        
-        const keys = await redisClient.keys('*');
-        // This is just a placeholder response
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Searching for "${query}" in project "${project_id || 'all'}". Found ${keys.length} documents in index. (Vector search not fully implemented in this placeholder)`,
-            },
-          ],
-        };
+        try {
+            const embedding = await generateEmbedding(query);
+            
+            if (embedding.length === 0) {
+                return {
+                    content: [{ type: "text", text: "Error generating embedding for query." }]
+                };
+            }
+
+            // Perform Vector Search
+            // KNN 3 @embedding $BLOB AS score
+            // We need to pass the blob as bytes. 
+            // In Node redis client, we can pass Float32Array directly if using .ft.search with appropriate options?
+            // Actually, node-redis supports passing the buffer.
+            
+            // Construct the query
+            // If project_id is present, filter by it.
+            let filter = '*';
+            if (project_id) {
+                filter = `@project:{${project_id}}`;
+            }
+
+            const searchResults = await redisClient.ft.search('idx:knowledge', `${filter}=>[KNN 3 @embedding $BLOB AS score]`, {
+                PARAMS: {
+                    BLOB: Float32Array.from(embedding)
+                },
+                SORTBY: 'score',
+                DIALECT: 2,
+                RETURN: ['content', 'path', 'project', 'score']
+            });
+
+            if (searchResults.total === 0) {
+                 return {
+                    content: [{ type: "text", text: "No relevant documents found." }]
+                };
+            }
+
+            const resultsText = searchResults.documents.map((doc: any) => {
+                return `--- Document: ${doc.value.path} (Project: ${doc.value.project}, Score: ${doc.value.score}) ---\n${doc.value.content}\n`;
+            }).join('\n');
+
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: resultsText,
+                    },
+                ],
+            };
+
+        } catch (error: any) {
+            console.error("Search error:", error);
+            return {
+                content: [{ type: "text", text: `Error executing search: ${error.message}` }]
+            };
+        }
       }
       throw new Error("Tool not found");
     });

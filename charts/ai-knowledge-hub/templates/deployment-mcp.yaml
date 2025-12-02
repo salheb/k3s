@@ -35,6 +35,11 @@ spec:
           env:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName | default (printf "%s-secrets" .Release.Name) }}
+                  key: gemini-api-key
           volumeMounts:
             - name: scripts
               mountPath: /scripts
