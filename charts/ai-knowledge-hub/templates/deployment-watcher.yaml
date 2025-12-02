@@ -28,7 +28,7 @@ spec:
               cp /scripts/package.json .
               cp /scripts/watcher.ts .
               npm install
-              npx ts-node --esm watcher.ts
+              npx tsx watcher.ts
           env:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"

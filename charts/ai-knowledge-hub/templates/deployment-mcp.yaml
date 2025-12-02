@@ -6,7 +6,10 @@ metadata:
     app: mcp-server
     release: {{ .Release.Name }}
 spec:
-  replicas: 1
+  # Replicas is managed by HPA if enabled
+  {{- if not .Values.mcp.autoscaling.enabled }}
+  replicas: {{ .Values.mcp.replicaCount | default 1 }}
+  {{- end }}
   selector:
     matchLabels:
       app: mcp-server
@@ -28,7 +31,7 @@ spec:
               cp /scripts/package.json .
               cp /scripts/mcp-server.ts .
               npm install
-              npx ts-node --esm mcp-server.ts
+              npx tsx mcp-server.ts
           env:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
