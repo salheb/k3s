@@ -10,6 +10,7 @@ data:
     {
       "name": "ai-knowledge-hub-scripts",
       "version": "1.0.0",
+      "type": "module",
       "dependencies": {
         "redis": "^4.6.0",
         "chokidar": "^3.5.3",
