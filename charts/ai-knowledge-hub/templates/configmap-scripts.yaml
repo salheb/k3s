@@ -122,6 +122,47 @@ data:
       }
     }
 
+    // Chunking configuration
+    const CHUNK_SIZE = 1000;
+    const CHUNK_OVERLAP = 100;
+
+    function chunkText(text: string, maxLength: number, overlap: number): string[] {
+      const chunks: string[] = [];
+      let startIndex = 0;
+
+      while (startIndex < text.length) {
+        let endIndex = startIndex + maxLength;
+        
+        if (endIndex < text.length) {
+            // Try to break at newline first
+            let breakPoint = text.lastIndexOf('\n', endIndex);
+            // If no newline in the last 20% of the chunk, try space
+            if (breakPoint === -1 || breakPoint < endIndex - (maxLength * 0.2)) {
+                breakPoint = text.lastIndexOf(' ', endIndex);
+            }
+            
+            if (breakPoint !== -1 && breakPoint > startIndex) {
+                endIndex = breakPoint + 1;
+            }
+        }
+
+        const chunk = text.slice(startIndex, endIndex).trim();
+        if (chunk.length > 0) {
+            chunks.push(chunk);
+        }
+
+        // Move start index for next chunk, accounting for overlap
+        // If we reached the end, we are done
+        if (endIndex >= text.length) break;
+        
+        startIndex = endIndex - overlap;
+        // Safety check to ensure progress
+        if (startIndex < 0) startIndex = 0;
+      }
+      
+      return chunks;
+    }
+
     async function processFile(filePath: string, project: any) {
       if (!filePath.endsWith('.md')) return;
 
@@ -129,30 +170,48 @@ data:
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
           const relativePath = path.relative(project.path, filePath);
-          // Use a prefix that matches the index definition (doc:)
-          const key = `doc:${project.redis_prefix}:${relativePath}`;
+          // Base key pattern for this file's chunks
+          const baseKey = `doc:${project.redis_prefix}:${relativePath}`;
 
-          console.log(`Processing file: ${filePath} -> Key: ${key}`);
+          console.log(`Processing file: ${filePath}`);
 
-          const embedding = await generateEmbedding(content);
-
-          if (embedding.length === 0) {
-              console.warn(`Skipping ${filePath} due to empty embedding`);
-              return;
+          // 1. Cleanup existing chunks for this file
+          // We search for keys starting with the baseKey + ":chunk_"
+          const existingKeys = await redisClient.keys(`${baseKey}:chunk_*`);
+          if (existingKeys.length > 0) {
+              await redisClient.del(...existingKeys);
+              console.log(`Deleted ${existingKeys.length} old chunks for ${relativePath}`);
           }
 
-          // JSON.SET key $ json_string
-          const doc = {
-            content: content,
-            path: relativePath,
-            project: project.name,
-            embedding: embedding,
-            updatedAt: new Date().toISOString()
-          };
-          
-          await redisClient.call('JSON.SET', key, '$', JSON.stringify(doc));
-          
-          console.log(`Updated ${key} in Redis`);
+          // 2. Chunk the content
+          const chunks = chunkText(content, CHUNK_SIZE, CHUNK_OVERLAP);
+          console.log(`Split ${relativePath} into ${chunks.length} chunks`);
+
+          // 3. Process each chunk
+          for (let i = 0; i < chunks.length; i++) {
+              const chunkContent = chunks[i];
+              const chunkKey = `${baseKey}:chunk_${i}`;
+              
+              const embedding = await generateEmbedding(chunkContent);
+
+              if (embedding.length === 0) {
+                  console.warn(`Skipping chunk ${i} of ${filePath} due to empty embedding`);
+                  continue;
+              }
+
+              const doc = {
+                content: chunkContent,
+                path: relativePath,
+                project: project.name,
+                embedding: embedding,
+                chunk_index: i,
+                total_chunks: chunks.length,
+                updatedAt: new Date().toISOString()
+              };
+              
+              await redisClient.call('JSON.SET', chunkKey, '$', JSON.stringify(doc));
+              console.log(`Saved chunk ${i}/${chunks.length} to Redis: ${chunkKey}`);
+          }
 
         } catch (error) {
           console.error(`Error processing file ${filePath}:`, error);

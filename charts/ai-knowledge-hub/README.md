@@ -30,6 +30,25 @@ A solução é composta por três componentes principais que trabalham em conjun
 - **Ferramentas Expostas**:
   - `search_knowledge_base`: Permite realizar buscas semânticas na base de conhecimento.
 
+### Detalhes Técnicos da Busca Vetorial
+
+A implementação utiliza o **RediSearch** com índices JSON.
+
+- **Schema do Índice (`idx:knowledge`)**:
+  - `content` (TEXT): Conteúdo textual do arquivo.
+  - `project` (TAG): Identificador do projeto.
+  - `path` (TAG): Caminho relativo do arquivo.
+  - `embedding` (VECTOR): Vetor de 768 dimensões (Float32), usando distância COSINE e algoritmo FLAT.
+
+- **Embeddings**:
+  - Modelo: `text-embedding-004` (Google Gemini).
+  - Dimensões: 768.
+
+- **Query de Busca**:
+  - Utiliza KNN (K-Nearest Neighbors) para encontrar os 3 documentos mais similares.
+  - Sintaxe: `[KNN 3 @embedding $vec AS score]`
+  - Cliente Redis: `ioredis` (necessário para suporte correto a envio de buffers binários).
+
 ---
 
 ## Instalação e Configuração
