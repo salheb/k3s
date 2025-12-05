@@ -37,7 +37,14 @@ data:
       
       check(res, {
         'status was 200': (r) => r.status == 200,
-        'has results': (r) => r.body.includes('Found'),
+        'has results': (r) => {
+            try {
+                const body = JSON.parse(r.body);
+                return body.total > 0;
+            } catch(e) {
+                return false;
+            }
+        },
       });
       
       sleep(1);
