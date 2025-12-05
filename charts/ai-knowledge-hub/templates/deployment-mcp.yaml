@@ -33,7 +33,7 @@ spec:
               cp /scripts/package.json .
               cp /scripts/mcp-server.ts .
               npm install
-              npx tsx mcp-server.ts
+              ./node_modules/.bin/tsx mcp-server.ts
           env:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
