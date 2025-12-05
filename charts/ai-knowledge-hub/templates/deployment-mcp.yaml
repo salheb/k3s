@@ -35,6 +35,9 @@ spec:
               cp /scripts/mcp-server.ts .
               npm install
               ./node_modules/.bin/tsx mcp-server.ts
+          ports:
+            - containerPort: 3000
+              name: http
           env:
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis:{{ .Values.redis.port }}"
