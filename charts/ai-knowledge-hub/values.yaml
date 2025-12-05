@@ -48,6 +48,7 @@ projects:
 # Global configuration
 global:
   hostProjectsPath: /home/julio/Documentos/projetos
+  revisionHistoryLimit: 3
 
 # Secrets
 # geminiApiKey is not used directly to avoid checking it into git.

@@ -10,6 +10,7 @@ spec:
   {{- if not .Values.mcp.autoscaling.enabled }}
   replicas: {{ .Values.mcp.replicaCount | default 1 }}
   {{- end }}
+  revisionHistoryLimit: {{ .Values.global.revisionHistoryLimit | default 3 }}
   selector:
     matchLabels:
       app: mcp-server
