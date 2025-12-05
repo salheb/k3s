@@ -20,8 +20,11 @@ data:
     export default function () {
       // Internal cluster DNS for the service
       const url = 'http://ai-knowledge-hub-mcp:3000/debug/search';
+      const queries = ['para', 'cliente', 'advogado'];
+      const randomQuery = queries[Math.floor(Math.random() * queries.length)];
+      
       const payload = JSON.stringify({
-        query: 'authentication flow design system',
+        query: randomQuery,
       });
 
       const params = {
