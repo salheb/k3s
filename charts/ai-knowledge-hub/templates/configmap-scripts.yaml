@@ -279,43 +279,6 @@ data:
     // Store active transports to handle incoming messages
     const transports = new Map<string, SSEServerTransport>();
 
-    function createServer() {
-      const server = new Server(
-        {
-          name: "ai-knowledge-hub",
-          version: "1.0.0",
-        },
-        {
-          capabilities: {
-            tools: {},
-          },
-        }
-      );
-
-      server.setRequestHandler(ListToolsRequestSchema, async () => {
-        return {
-          tools: [
-            {
-              name: "search_knowledge_base",
-              description: "Search the AI Knowledge Hub for relevant documentation and code snippets using vector search.",
-              inputSchema: {
-                type: "object",
-                properties: {
-                  query: {
-                    type: "string",
-                    description: "The search query (e.g., 'how to install', 'project architecture')",
-                  },
-                  project_id: {
-                    type: "string",
-                    description: "Optional project ID to filter results (e.g., 'elisabete-nogueira')",
-                  },
-                },
-                required: ["query"],
-              },
-            },
-          ],
-        };
-      });
 
     // Helper function for search logic - defined globally
     async function executeSearch(query: string, project_id?: string) {
