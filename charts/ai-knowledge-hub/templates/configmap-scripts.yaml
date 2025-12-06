@@ -352,3 +352,80 @@ data:
         process.exit(1);
       });
     }
+
+    function createServer() {
+      const server = new Server(
+        {
+          name: "ai-knowledge-hub",
+          version: "1.0.0",
+        },
+        {
+          capabilities: {
+            tools: {},
+          },
+        }
+      );
+
+      server.setRequestHandler(ListToolsRequestSchema, async () => {
+        return {
+          tools: [
+            {
+              name: "search_knowledge_base",
+              description: "Search the AI Knowledge Hub for relevant documentation and code snippets using vector search.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  query: {
+                    type: "string",
+                    description: "The search query (e.g., 'how to install', 'project architecture')",
+                  },
+                  project_id: {
+                    type: "string",
+                    description: "Optional project ID to filter results (e.g., 'elisabete-nogueira')",
+                  },
+                },
+                required: ["query"],
+              },
+            },
+          ],
+        };
+      });
+
+      server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        if (request.params.name === "search_knowledge_base") {
+          const { query, project_id } = request.params.arguments as any;
+          
+          try {
+              const { total, results } = await executeSearch(query, project_id);
+              
+              if (results.length === 0) {
+                   return {
+                      content: [{ type: "text", text: `No relevant documents found for "${query}".` }],
+                  };
+              }
+
+              const formattedResults = results.map((doc: any) => {
+                  return `[${doc.project}] ${doc.path} (Score: ${doc.score})\n---\n${doc.content}\n---`;
+              }).join('\n\n');
+
+              return {
+                content: [{ type: "text", text: `Found ${total} documents for "${query}":\n\n${formattedResults}` }],
+              };
+          } catch (error: any) {
+              console.error("Search error:", error);
+              return {
+                  content: [{ type: "text", text: `Error performing search: ${error.message}` }],
+                  isError: true,
+              };
+          }
+        }
+        throw new Error("Tool not found");
+      });
+
+      return server;
+    }
+
+    async function generateEmbedding(text: string): Promise<number[]> {
+        const result = await model.embedContent(text);
+        return result.embedding.values;
+    }
