@@ -429,3 +429,38 @@ data:
         const result = await model.embedContent(text);
         return result.embedding.values;
     }
+
+    // Helper function for search logic - defined globally
+    async function executeSearch(query: string, project_id?: string) {
+        try {
+            const embedding = await generateEmbedding(query);
+            const blob = Buffer.from(new Float32Array(embedding).buffer);
+            let filter = '*';
+            if (project_id) {
+                filter = `@project:{${project_id}}`;
+            }
+            const args = [
+                'idx:knowledge',
+                `${filter}=>[KNN 3 @embedding $vec AS score]`,
+                'PARAMS', '2', 'vec', blob,
+                'DIALECT', '2',
+                'RETURN', '4', 'content', 'path', 'project', 'score',
+                'SORTBY', 'score'
+            ];
+            const response = await redisClient.call('FT.SEARCH', ...args) as any[];
+            const total = response[0];
+            const results = [];
+            for (let i = 1; i < response.length; i += 2) {
+                const key = response[i];
+                const fields = response[i+1]; 
+                const doc: any = {};
+                for (let j = 0; j < fields.length; j += 2) {
+                    doc[fields[j]] = fields[j+1];
+                }
+                results.push(doc);
+            }
+            return { total, results };
+        } catch (error) {
+            throw error;
+        }
+    }
