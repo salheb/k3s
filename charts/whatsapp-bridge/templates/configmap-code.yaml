@@ -465,12 +465,6 @@ data:
     // HTTP server (MCP Streamable HTTP transport + health endpoint)
     // ─────────────────────────────────────────────────────────────────────────────
     async function startHttpServer() {
-      const mcpServer = buildMcpServer();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => crypto.randomUUID(),
-      });
-      await mcpServer.connect(transport);
-
       const httpServer = http.createServer(async (req, res) => {
         const url = new URL(req.url!, `http://localhost`);
 
@@ -491,8 +485,17 @@ data:
           return;
         }
 
-        // ── /mcp — MCP Streamable HTTP transport ─────────────────────────────
+        // ── /mcp — MCP Streamable HTTP transport (stateless: per-request) ────
         if (url.pathname === '/mcp') {
+          const mcpServer = buildMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: undefined,
+          });
+          res.on('close', () => {
+            transport.close();
+            mcpServer.close();
+          });
+          await mcpServer.connect(transport);
           await transport.handleRequest(req, res);
           return;
         }
