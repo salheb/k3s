@@ -1,0 +1,28 @@
+# Default values for whatsapp-bridge.
+
+bridge:
+  image: node:20-alpine
+  replicaCount: 1
+  port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+persistence:
+  size: 1Gi
+  storageClass: local-path
+
+# Internal hostname for kubectl port-forward reference
+internalHostname: whatsapp-bridge.whatsapp.svc.cluster.local
+
+# Name of the SealedSecret / Secret that contains the MCP bearer token.
+# The Secret key is 'mcp-bearer-token'.
+secretName: whatsapp-bridge-secrets
+
+# Global configuration
+global:
+  revisionHistoryLimit: 3

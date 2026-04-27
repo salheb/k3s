@@ -1,0 +1,538 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-code
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: whatsapp-bridge
+    release: {{ .Release.Name }}
+data:
+  package.json: |
+    {
+      "name": "whatsapp-bridge",
+      "version": "1.0.0",
+      "description": "WhatsApp Bridge: Baileys + MCP server",
+      "type": "module",
+      "dependencies": {
+        "@whiskeysockets/baileys": "^6.7.18",
+        "better-sqlite3": "^9.6.0",
+        "@modelcontextprotocol/sdk": "^1.10.2",
+        "pino": "^9.5.0",
+        "qrcode-terminal": "^0.12.0"
+      },
+      "devDependencies": {
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.3",
+        "@types/better-sqlite3": "^7.6.12",
+        "@types/node": "^22.10.5",
+        "@types/qrcode-terminal": "^0.12.2"
+      }
+    }
+
+  bridge.ts: |
+    /**
+     * WhatsApp Bridge — Baileys + MCP HTTP server
+     *
+     * SQLite Schema:
+     * ─────────────
+     *   chats(id TEXT PK, jid TEXT UNIQUE, name TEXT, last_message_ts INTEGER)
+     *   contacts(id TEXT PK, jid TEXT UNIQUE, name TEXT, notify TEXT, updated_at INTEGER)
+     *   messages(
+     *     id          TEXT PK,
+     *     chat_jid    TEXT,
+     *     from_jid    TEXT,
+     *     body        TEXT,
+     *     timestamp   INTEGER,
+     *     from_me     INTEGER,   -- 0 | 1
+     *     has_media   INTEGER,   -- 0 | 1
+     *     media_type  TEXT,      -- 'image' | 'video' | 'audio' | 'document' | NULL
+     *     raw_type    TEXT       -- Baileys messageType string
+     *   )
+     *
+     * Adding new MCP tools:
+     * ─────────────────────
+     *   1. Add a new entry in the `TOOLS` array below (name, description, inputSchema).
+     *   2. Add a matching case in the switch inside handleCallTool().
+     *   3. Implement the handler function (async, receives typed args, returns string).
+     *   No other changes needed — the MCP transport is generic.
+     */
+
+    import { createRequire } from 'module';
+    import * as path from 'path';
+    import * as fs from 'fs';
+    import * as http from 'http';
+    import * as crypto from 'crypto';
+
+    // ── Baileys (CommonJS default export) ───────────────────────────────────────
+    const require = createRequire(import.meta.url);
+    const {
+      default: makeWASocket,
+      useMultiFileAuthState,
+      DisconnectReason,
+      fetchLatestBaileysVersion,
+      isJidBroadcast,
+    } = require('@whiskeysockets/baileys');
+
+    // ── better-sqlite3 ──────────────────────────────────────────────────────────
+    import Database from 'better-sqlite3';
+
+    // ── MCP SDK ─────────────────────────────────────────────────────────────────
+    import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+    import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+    import { z } from 'zod';
+
+    // ── pino logger ─────────────────────────────────────────────────────────────
+    import pino from 'pino';
+
+    // ── qrcode-terminal ─────────────────────────────────────────────────────────
+    import qrcode from 'qrcode-terminal';
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Configuration
+    // ─────────────────────────────────────────────────────────────────────────────
+    const DATA_DIR       = process.env.DATA_DIR       ?? '/data';
+    const MCP_PORT       = parseInt(process.env.MCP_PORT ?? '3000', 10);
+    const MCP_BEARER     = process.env.MCP_BEARER_TOKEN;
+    const LOG_LEVEL      = process.env.LOG_LEVEL      ?? 'info';
+
+    if (!MCP_BEARER) {
+      console.error('FATAL: MCP_BEARER_TOKEN env var is required');
+      process.exit(1);
+    }
+
+    const AUTH_DIR  = path.join(DATA_DIR, 'auth');
+    const DB_PATH   = path.join(DATA_DIR, 'db.sqlite');
+
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Logger (pino — required by Baileys; reused everywhere)
+    // ─────────────────────────────────────────────────────────────────────────────
+    const logger = pino({ level: LOG_LEVEL });
+    // Baileys expects a pino-compatible logger scoped to its own namespace
+    const baileysLogger = logger.child({ module: 'baileys' });
+    (baileysLogger as any).level = 'silent'; // suppress noisy Baileys internal logs
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // SQLite — schema bootstrap
+    // ─────────────────────────────────────────────────────────────────────────────
+    const db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id             TEXT PRIMARY KEY,
+        jid            TEXT UNIQUE NOT NULL,
+        name           TEXT,
+        last_message_ts INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS contacts (
+        id         TEXT PRIMARY KEY,
+        jid        TEXT UNIQUE NOT NULL,
+        name       TEXT,
+        notify     TEXT,
+        updated_at INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id         TEXT PRIMARY KEY,
+        chat_jid   TEXT NOT NULL,
+        from_jid   TEXT,
+        body       TEXT,
+        timestamp  INTEGER NOT NULL,
+        from_me    INTEGER NOT NULL DEFAULT 0,
+        has_media  INTEGER NOT NULL DEFAULT 0,
+        media_type TEXT,
+        raw_type   TEXT,
+        FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
+      CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+    `);
+
+    logger.info({ db: DB_PATH }, 'SQLite initialised');
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Prepared statements
+    // ─────────────────────────────────────────────────────────────────────────────
+    const stmts = {
+      upsertChat: db.prepare(`
+        INSERT INTO chats (id, jid, name, last_message_ts)
+        VALUES (@id, @jid, @name, @last_message_ts)
+        ON CONFLICT(jid) DO UPDATE SET
+          name = excluded.name,
+          last_message_ts = MAX(last_message_ts, excluded.last_message_ts)
+      `),
+      upsertContact: db.prepare(`
+        INSERT INTO contacts (id, jid, name, notify, updated_at)
+        VALUES (@id, @jid, @name, @notify, @updated_at)
+        ON CONFLICT(jid) DO UPDATE SET
+          name = COALESCE(excluded.name, name),
+          notify = COALESCE(excluded.notify, notify),
+          updated_at = excluded.updated_at
+      `),
+      insertMessage: db.prepare(`
+        INSERT OR IGNORE INTO messages
+          (id, chat_jid, from_jid, body, timestamp, from_me, has_media, media_type, raw_type)
+        VALUES
+          (@id, @chat_jid, @from_jid, @body, @timestamp, @from_me, @has_media, @media_type, @raw_type)
+      `),
+      listChats: db.prepare(`
+        SELECT id, jid, name, last_message_ts
+        FROM chats
+        ORDER BY last_message_ts DESC
+        LIMIT @limit OFFSET @offset
+      `),
+      listMessages: db.prepare(`
+        SELECT id, chat_jid, from_jid, body, timestamp, from_me, has_media, media_type, raw_type
+        FROM messages
+        WHERE chat_jid = @chat_jid
+          AND (@before_ts IS NULL OR timestamp < @before_ts)
+        ORDER BY timestamp DESC
+        LIMIT @limit
+      `),
+      searchMessages: db.prepare(`
+        SELECT id, chat_jid, from_jid, body, timestamp, from_me
+        FROM messages
+        WHERE body LIKE @query
+          AND (@chat_jid IS NULL OR chat_jid = @chat_jid)
+        ORDER BY timestamp DESC
+        LIMIT @limit
+      `),
+      listContacts: db.prepare(`
+        SELECT id, jid, name, notify FROM contacts ORDER BY name ASC
+      `),
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // WhatsApp socket state (set after Baileys connects)
+    // ─────────────────────────────────────────────────────────────────────────────
+    let waSocketReady = false;
+    let waSocket: ReturnType<typeof makeWASocket> | null = null;
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Baileys bootstrap
+    // ─────────────────────────────────────────────────────────────────────────────
+    async function startBaileys() {
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      const { version } = await fetchLatestBaileysVersion();
+      logger.info({ version }, 'Baileys version');
+
+      const sock = makeWASocket({
+        version,
+        auth: state,
+        logger: baileysLogger,
+        printQRInTerminal: false, // we handle QR ourselves
+        syncFullHistory: false,
+      });
+
+      waSocket = sock;
+
+      sock.ev.on('creds.update', saveCreds);
+
+      sock.ev.on('connection.update', (update: any) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          logger.info('Scan this QR code with your WhatsApp phone:');
+          qrcode.generate(qr, { small: true });
+        }
+
+        if (connection === 'open') {
+          waSocketReady = true;
+          logger.info('WhatsApp connection: open');
+        }
+
+        if (connection === 'close') {
+          waSocketReady = false;
+          const code = (lastDisconnect?.error as any)?.output?.statusCode;
+          const shouldReconnect = code !== DisconnectReason.loggedOut;
+          logger.warn({ code }, 'WhatsApp connection closed');
+          if (shouldReconnect) {
+            logger.info('Reconnecting in 5s…');
+            setTimeout(startBaileys, 5_000);
+          } else {
+            logger.error('Logged out. Delete /data/auth and restart to re-pair.');
+          }
+        }
+      });
+
+      // ── Persist incoming messages ──────────────────────────────────────────
+      sock.ev.on('messages.upsert', ({ messages, type }: any) => {
+        if (type !== 'notify') return;
+        for (const msg of messages) {
+          if (!msg.key?.remoteJid) continue;
+          if (isJidBroadcast(msg.key.remoteJid)) continue;
+
+          const chatJid  = msg.key.remoteJid;
+          const msgId    = msg.key.id ?? crypto.randomUUID();
+          const ts       = Number(msg.messageTimestamp ?? Math.floor(Date.now() / 1000));
+          const fromMe   = msg.key.fromMe ? 1 : 0;
+          const fromJid  = fromMe ? 'me' : chatJid;
+
+          // Determine message type and body
+          const msgContent  = msg.message ?? {};
+          const rawType     = Object.keys(msgContent)[0] ?? 'unknown';
+          const textTypes   = ['conversation', 'extendedTextMessage', 'ephemeralMessage'];
+          const mediaTypes: Record<string, string> = {
+            imageMessage:    'image',
+            videoMessage:    'video',
+            audioMessage:    'audio',
+            documentMessage: 'document',
+            stickerMessage:  'image',
+          };
+
+          let body: string | null = null;
+          let hasMedia = 0;
+          let mediaType: string | null = null;
+
+          if (rawType === 'conversation') {
+            body = msgContent.conversation ?? null;
+          } else if (rawType === 'extendedTextMessage') {
+            body = msgContent.extendedTextMessage?.text ?? null;
+          } else if (rawType === 'ephemeralMessage') {
+            const inner = msgContent.ephemeralMessage?.message ?? {};
+            const innerType = Object.keys(inner)[0] ?? '';
+            body = inner.conversation ?? inner.extendedTextMessage?.text ?? null;
+            if (mediaTypes[innerType]) { hasMedia = 1; mediaType = mediaTypes[innerType]; }
+          } else if (mediaTypes[rawType]) {
+            hasMedia = 1;
+            mediaType = mediaTypes[rawType];
+            // Caption is preserved as body when present
+            const mediaMsg = (msgContent as any)[rawType];
+            body = mediaMsg?.caption ?? null;
+          }
+
+          try {
+            stmts.insertMessage.run({
+              id: msgId, chat_jid: chatJid, from_jid: fromJid,
+              body, timestamp: ts, from_me: fromMe,
+              has_media: hasMedia, media_type: mediaType, raw_type: rawType,
+            });
+            stmts.upsertChat.run({
+              id: chatJid, jid: chatJid,
+              name: msg.pushName ?? null,
+              last_message_ts: ts,
+            });
+            logger.debug({ msgId, chatJid, rawType }, 'message stored');
+          } catch (err) {
+            logger.error({ err, msgId }, 'failed to store message');
+          }
+        }
+      });
+
+      // ── Sync contacts ──────────────────────────────────────────────────────
+      sock.ev.on('contacts.upsert', (contacts: any[]) => {
+        for (const c of contacts) {
+          if (!c.id) continue;
+          stmts.upsertContact.run({
+            id: c.id, jid: c.id,
+            name: c.name ?? null,
+            notify: c.notify ?? null,
+            updated_at: Math.floor(Date.now() / 1000),
+          });
+        }
+        logger.debug({ count: contacts.length }, 'contacts upserted');
+      });
+
+      // ── Sync chat list ─────────────────────────────────────────────────────
+      sock.ev.on('chats.set', ({ chats }: any) => {
+        for (const chat of chats) {
+          if (!chat.id) continue;
+          stmts.upsertChat.run({
+            id: chat.id, jid: chat.id,
+            name: chat.name ?? null,
+            last_message_ts: chat.conversationTimestamp ?? 0,
+          });
+        }
+        logger.info({ count: chats.length }, 'initial chat list synced');
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // MCP tools
+    // ─────────────────────────────────────────────────────────────────────────────
+    function buildMcpServer(): McpServer {
+      const server = new McpServer({
+        name: 'whatsapp-bridge',
+        version: '1.0.0',
+      });
+
+      // ── list_chats ───────────────────────────────────────────────────────────
+      server.tool(
+        'list_chats',
+        'List WhatsApp chats ordered by most recent message.',
+        {
+          limit:  z.number().int().min(1).max(200).default(20).describe('Max chats to return'),
+          offset: z.number().int().min(0).default(0).describe('Pagination offset'),
+        },
+        async ({ limit, offset }) => {
+          const rows = stmts.listChats.all({ limit, offset });
+          return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+        },
+      );
+
+      // ── list_messages ────────────────────────────────────────────────────────
+      server.tool(
+        'list_messages',
+        'List messages in a specific WhatsApp chat, newest first.',
+        {
+          chat_jid:  z.string().describe('JID of the chat (e.g. 5511999990000@s.whatsapp.net)'),
+          limit:     z.number().int().min(1).max(200).default(20).describe('Max messages to return'),
+          before_ts: z.number().int().optional().describe('Return only messages before this Unix timestamp'),
+        },
+        async ({ chat_jid, limit, before_ts }) => {
+          const rows = stmts.listMessages.all({
+            chat_jid,
+            limit,
+            before_ts: before_ts ?? null,
+          });
+          return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+        },
+      );
+
+      // ── search_messages ──────────────────────────────────────────────────────
+      server.tool(
+        'search_messages',
+        'Full-text search messages by substring match on body.',
+        {
+          query:    z.string().min(1).describe('Text to search for (SQL LIKE, case-insensitive)'),
+          chat_jid: z.string().optional().describe('Restrict search to this chat JID'),
+          limit:    z.number().int().min(1).max(200).default(20).describe('Max results'),
+        },
+        async ({ query, chat_jid, limit }) => {
+          const rows = stmts.searchMessages.all({
+            query: `%${query}%`,
+            chat_jid: chat_jid ?? null,
+            limit,
+          });
+          return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+        },
+      );
+
+      // ── send_message ─────────────────────────────────────────────────────────
+      server.tool(
+        'send_message',
+        'Send a text message to a WhatsApp chat. Always ask the user for confirmation before calling this tool.',
+        {
+          chat_jid: z.string().describe('Destination JID (e.g. 5511999990000@s.whatsapp.net or group@g.us)'),
+          text:     z.string().min(1).describe('Message text to send'),
+        },
+        async ({ chat_jid, text }) => {
+          if (!waSocket || !waSocketReady) {
+            return {
+              content: [{ type: 'text', text: 'ERROR: WhatsApp socket is not connected.' }],
+              isError: true,
+            };
+          }
+          try {
+            const result = await waSocket.sendMessage(chat_jid, { text });
+            const msgId  = result?.key?.id ?? 'unknown';
+            const ts     = Math.floor(Date.now() / 1000);
+            // Store outbound message
+            stmts.insertMessage.run({
+              id: msgId, chat_jid, from_jid: 'me',
+              body: text, timestamp: ts,
+              from_me: 1, has_media: 0, media_type: null, raw_type: 'conversation',
+            });
+            stmts.upsertChat.run({ id: chat_jid, jid: chat_jid, name: null, last_message_ts: ts });
+            return { content: [{ type: 'text', text: `Message sent. id=${msgId}` }] };
+          } catch (err: any) {
+            logger.error({ err }, 'send_message failed');
+            return {
+              content: [{ type: 'text', text: `ERROR: ${err.message}` }],
+              isError: true,
+            };
+          }
+        },
+      );
+
+      // ── list_contacts ────────────────────────────────────────────────────────
+      server.tool(
+        'list_contacts',
+        'List all contacts synchronised from WhatsApp.',
+        {},
+        async () => {
+          const rows = stmts.listContacts.all();
+          return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+        },
+      );
+
+      return server;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // HTTP server (MCP Streamable HTTP transport + health endpoint)
+    // ─────────────────────────────────────────────────────────────────────────────
+    async function startHttpServer() {
+      const mcpServer = buildMcpServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+      });
+      await mcpServer.connect(transport);
+
+      const httpServer = http.createServer(async (req, res) => {
+        const url = new URL(req.url!, `http://localhost`);
+
+        // ── /health — no auth required ───────────────────────────────────────
+        if (url.pathname === '/health') {
+          const status = waSocketReady ? 200 : 503;
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: waSocketReady ? 'ok' : 'not_connected' }));
+          return;
+        }
+
+        // ── Bearer token check ───────────────────────────────────────────────
+        const authHeader = req.headers['authorization'] ?? '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+        if (token !== MCP_BEARER) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        // ── /mcp — MCP Streamable HTTP transport ─────────────────────────────
+        if (url.pathname === '/mcp') {
+          await transport.handleRequest(req, res);
+          return;
+        }
+
+        res.writeHead(404);
+        res.end('Not found');
+      });
+
+      httpServer.listen(MCP_PORT, () => {
+        logger.info({ port: MCP_PORT }, 'MCP HTTP server listening');
+      });
+
+      return httpServer;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Graceful shutdown
+    // ─────────────────────────────────────────────────────────────────────────────
+    async function shutdown(signal: string, httpServer: http.Server) {
+      logger.info({ signal }, 'Graceful shutdown initiated');
+      httpServer.close();
+      if (waSocket) {
+        try { await waSocket.end(undefined); } catch { /* ignore */ }
+      }
+      db.close();
+      logger.info('Shutdown complete');
+      process.exit(0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Main
+    // ─────────────────────────────────────────────────────────────────────────────
+    (async () => {
+      logger.info('Starting WhatsApp Bridge…');
+      const httpServer = await startHttpServer();
+      await startBaileys();
+
+      process.on('SIGTERM', () => shutdown('SIGTERM', httpServer));
+      process.on('SIGINT',  () => shutdown('SIGINT',  httpServer));
+    })();

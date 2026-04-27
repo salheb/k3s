@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: whatsapp-bridge
+    release: {{ .Release.Name }}
+spec:
+  # ClusterIP only — nothing exposed outside the cluster.
+  # Access via: kubectl port-forward svc/whatsapp-bridge -n whatsapp 8765:3000
+  type: ClusterIP
+  selector:
+    app: whatsapp-bridge
+    release: {{ .Release.Name }}
+  ports:
+    - name: mcp
+      port: {{ .Values.bridge.port }}
+      targetPort: {{ .Values.bridge.port }}
+      protocol: TCP

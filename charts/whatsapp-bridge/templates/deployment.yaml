@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: whatsapp-bridge
+    release: {{ .Release.Name }}
+spec:
+  # Fixed at 1 — Baileys maintains persistent WhatsApp socket state.
+  # Multiple replicas would duplicate incoming messages and break pairing.
+  replicas: 1
+  revisionHistoryLimit: {{ .Values.global.revisionHistoryLimit | default 3 }}
+  # Recreate: ensures only one WhatsApp socket at a time during redeploys.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: whatsapp-bridge
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      annotations:
+        # Force pod restart when ConfigMap content changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-code.yaml") . | sha256sum }}
+      labels:
+        app: whatsapp-bridge
+        release: {{ .Release.Name }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: bridge
+          image: "{{ .Values.bridge.image }}"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /app
+              cd /app
+              cp /scripts/package.json .
+              cp /scripts/bridge.ts .
+              npm install --prefer-offline --no-fund --no-audit 2>&1
+              ./node_modules/.bin/tsx bridge.ts
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.bridge.port }}
+              protocol: TCP
+          env:
+            - name: DATA_DIR
+              value: "/data"
+            - name: MCP_PORT
+              value: "{{ .Values.bridge.port }}"
+            - name: MCP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: mcp-bearer-token
+            - name: LOG_LEVEL
+              value: "info"
+            - name: NODE_ENV
+              value: "production"
+          volumeMounts:
+            - name: code
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.bridge.resources | nindent 12 }}
+          # npm install takes ~30-60s, so give generous initial delay.
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.bridge.port }}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          # WhatsApp socket must be open before marking pod Ready.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.bridge.port }}
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 2
+      volumes:
+        - name: code
+          configMap:
+            name: {{ .Release.Name }}-code
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data

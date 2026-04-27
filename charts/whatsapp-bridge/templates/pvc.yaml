@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: whatsapp-bridge
+    release: {{ .Release.Name }}
+  annotations:
+    # PVC is intentionally NOT deleted on helm uninstall.
+    # Helm skips PVCs by default (no helm.sh/resource-policy annotation needed).
+    # To delete manually: kubectl delete pvc {{ .Release.Name }}-data -n {{ .Release.Namespace }}
+    # WARNING: deleting this PVC will erase auth state and all messages,
+    # requiring a new QR-code pairing.
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
