@@ -140,8 +140,9 @@ data:
         from_me    INTEGER NOT NULL DEFAULT 0,
         has_media  INTEGER NOT NULL DEFAULT 0,
         media_type TEXT,
-        raw_type   TEXT,
-        FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+        raw_type   TEXT
+        -- No FK on chat_jid: Baileys delivers messages.upsert before chats.set
+        -- We ensure the chat row exists via upsertChat before every insertMessage
       );
 
       CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid);
@@ -302,15 +303,16 @@ data:
           }
 
           try {
-            stmts.insertMessage.run({
-              id: msgId, chat_jid: chatJid, from_jid: fromJid,
-              body, timestamp: ts, from_me: fromMe,
-              has_media: hasMedia, media_type: mediaType, raw_type: rawType,
-            });
+            // upsertChat FIRST — ensures the parent row exists before inserting message
             stmts.upsertChat.run({
               id: chatJid, jid: chatJid,
               name: msg.pushName ?? null,
               last_message_ts: ts,
+            });
+            stmts.insertMessage.run({
+              id: msgId, chat_jid: chatJid, from_jid: fromJid,
+              body, timestamp: ts, from_me: fromMe,
+              has_media: hasMedia, media_type: mediaType, raw_type: rawType,
             });
             logger.debug({ msgId, chatJid, rawType }, 'message stored');
           } catch (err) {
@@ -427,13 +429,13 @@ data:
             const result = await waSocket.sendMessage(chat_jid, { text });
             const msgId  = result?.key?.id ?? 'unknown';
             const ts     = Math.floor(Date.now() / 1000);
-            // Store outbound message
+            // upsertChat FIRST, then store outbound message
+            stmts.upsertChat.run({ id: chat_jid, jid: chat_jid, name: null, last_message_ts: ts });
             stmts.insertMessage.run({
               id: msgId, chat_jid, from_jid: 'me',
               body: text, timestamp: ts,
               from_me: 1, has_media: 0, media_type: null, raw_type: 'conversation',
             });
-            stmts.upsertChat.run({ id: chat_jid, jid: chat_jid, name: null, last_message_ts: ts });
             return { content: [{ type: 'text', text: `Message sent. id=${msgId}` }] };
           } catch (err: any) {
             logger.error({ err }, 'send_message failed');
